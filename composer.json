@@ -1,0 +1,25 @@
+{
+  "name": "Messaging/sockets",
+  "description": "Socket server for a messaging app",
+  "type": "library",
+  "license": "Proprietary",
+  "authors": [
+    {
+      "name": "George Hallam",
+      "email": "george_hallam@hotmail.com"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Messaging\\sockets\\": "src"
+    }
+  },
+  "require": {
+    "cboden/ratchet": "0.3.*"
+  },
+  "require-dev": {
+  },
+  "repositories": [
+
+  ]
+}

@@ -8,16 +8,36 @@ use Ratchet\Wamp\WampServerInterface;
 
 class Chat implements WampServerInterface
 {
+    /**
+     * @var \SplObjectStorage
+     */
+    protected $connections;
 
     /**
-     * A lookup of all the topics clients have subscribed to
+     * @var array
      */
-    protected $subscribedTopics = array();
+    protected $subscribedTopics = [];
+
+    public function __construct()
+    {
+        $this->connections = new \SplObjectStorage;
+    }
 
     public function onSubscribe(ConnectionInterface $conn, $topic)
     {
-        $this->subscribedTopics[$topic->getId()] = $topic;
-        echo "Someone has subscribed" . PHP_EOL;
+        $subscriptionInfo = explode('/', $topic->getId());
+
+        if (3 !== count($subscriptionInfo)) {
+            echo "Invalid subscription info";
+            return;
+        }
+
+        $client = $subscriptionInfo[0];
+        $userId = $subscriptionInfo[1];
+        $auth = $subscriptionInfo[2];
+
+        $this->subscribedTopics[$client][$userId] = $topic;
+        Helpers::writeLine('User: ' . $userId . ' has subscribed to ' . $client);
     }
 
     /**
@@ -27,17 +47,35 @@ class Chat implements WampServerInterface
     {
         $entryData = json_decode($entry, true);
 
-        echo "Someone send a message" . PHP_EOL;
+        if (!array_key_exists('client', $entryData)) {
+            Helpers::writeLine('Client is not set in entry data');
+        }
 
-        // If the lookup topic object isn't set there is no one to publish to
-        if (!array_key_exists($entryData['server'], $this->subscribedTopics)) {
+        if (!array_key_exists('subscribedUsers', $entryData)) {
+            Helpers::writeLine('subscribedUsers is not set in entry data');
+        }
+
+        $client = $entryData['client'];
+        $subscribedUsers = $entryData['subscribedUsers'];
+
+        print_r($entryData);
+
+        Helpers::writeLine('Message sent from ' . $client . ' to: ' . implode(', ', $subscribedUsers));
+
+        if (!array_key_exists($client, $this->subscribedTopics)) {
+            Helpers::writeLine('No one set up to view: ' . $client . ' message not sent');
             return;
         }
 
-        $topic = $this->subscribedTopics[$entryData['server']];
+        foreach ($subscribedUsers as $subscribedUser) {
+            if (!array_key_exists($subscribedUser, $this->subscribedTopics[$client])) {
+                continue;
+            }
+            /** @var Topic $topic */
+            $topic = $this->subscribedTopics[$client][$subscribedUser];
+            $topic->broadcast($entryData);
+        }
 
-        // re-send the data to all the clients subscribed to that category
-        $topic->broadcast($entryData);
     }
 
     /**
@@ -47,6 +85,9 @@ class Chat implements WampServerInterface
      */
     function onOpen(ConnectionInterface $conn)
     {
+        $this->connections->attach($conn);
+
+        echo "Someone has opened a connection" . PHP_EOL;
         // TODO: Implement onOpen() method.
     }
 
@@ -57,7 +98,9 @@ class Chat implements WampServerInterface
      */
     function onClose(ConnectionInterface $conn)
     {
+        $this->connections->detach($conn);
         // TODO: Implement onClose() method.
+        echo "Someone has closed a connection" . PHP_EOL;
     }
 
     /**
@@ -92,6 +135,7 @@ class Chat implements WampServerInterface
     function onUnSubscribe(ConnectionInterface $conn, $topic)
     {
         // TODO: Implement onUnSubscribe() method.
+        echo "Someone has unsubscribed" . PHP_EOL;
     }
 
     /**

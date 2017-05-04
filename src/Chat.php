@@ -58,8 +58,6 @@ class Chat implements WampServerInterface
         $client = $entryData['client'];
         $subscribedUsers = $entryData['subscribedUsers'];
 
-        print_r($entryData);
-
         Helpers::writeLine('Message sent from ' . $client . ' to: ' . implode(', ', $subscribedUsers));
 
         if (!array_key_exists($client, $this->subscribedTopics)) {

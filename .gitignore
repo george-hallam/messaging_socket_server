@@ -1,2 +1,4 @@
 .idea
 /vendor
+.env
+/config/server_auth.json

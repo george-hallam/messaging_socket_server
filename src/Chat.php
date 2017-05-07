@@ -2,6 +2,11 @@
 
 namespace Messaging\sockets;
 
+use Dotenv\Dotenv;
+use Guzzle\Http\Exception\CurlException;
+use GuzzleHttp\Client;
+use Monolog\Handler\StreamHandler;
+use Monolog\Logger;
 use Ratchet\ConnectionInterface;
 use Ratchet\Wamp\Topic;
 use Ratchet\Wamp\WampServerInterface;
@@ -14,6 +19,12 @@ class Chat implements WampServerInterface
     protected $connections;
 
     /**
+     * @var Logger
+     */
+    protected $logger;
+
+    protected $serverAuth = [];
+    /**
      * @var array
      */
     protected $subscribedTopics = [];
@@ -21,23 +32,93 @@ class Chat implements WampServerInterface
     public function __construct()
     {
         $this->connections = new \SplObjectStorage;
+
+        $dotenv = new Dotenv(__DIR__ . '/..');
+        $dotenv->load();
+        $dotenv->required(['LOG_PATH', 'DEBUG_LOG', 'INFO_LOG', 'ERROR_LOG']);
+
+        $this->logger = new Logger('logger');
+        $this->logger->pushHandler(new StreamHandler(getenv('LOG_PATH') . getenv('DEBUG_LOG'), Logger::DEBUG));
+        $this->logger->pushHandler(new StreamHandler(getenv('LOG_PATH') . getenv('INFO_LOG'), Logger::INFO));
+        $this->logger->pushHandler(new StreamHandler(getenv('LOG_PATH') . getenv('ERROR_LOG'), Logger::ERROR));
+
+        $severAuth = file_get_contents(__DIR__ . '/../config/server_auth.json');
+
+        if (false === $severAuth) {
+            $this->logger->addError('No server_auth.json file found in config');
+            throw new \RuntimeException('No server_auth.json file found in config');
+        }
+
+        $this->serverAuth = json_decode($severAuth);
+        $this->logger->addDebug('Socket server started');
+
+
     }
 
     public function onSubscribe(ConnectionInterface $conn, $topic)
     {
-        $subscriptionInfo = explode('/', $topic->getId());
+        try {
+            $subscriptionInfo = explode('/', $topic->getId());
 
-        if (3 !== count($subscriptionInfo)) {
-            echo "Invalid subscription info";
-            return;
+            if (3 !== count($subscriptionInfo)) {
+                throw new \RuntimeException('Invalid subscription info: ' . json_encode($subscriptionInfo));
+            }
+
+            $client = $subscriptionInfo[0];
+            $userId = $subscriptionInfo[1];
+            $auth = $subscriptionInfo[2];
+
+            if (!array_key_exists($client, $this->serverAuth)) {
+                throw new \RuntimeException('Client ' . $client . ' does not exist in the list of authorised clients');
+            }
+
+            $this->logger->addDebug('User: ' . $userId . ' is trying to connect to ' . $client);
+
+            $this->authorise($this->serverAuth->{$client}, $userId, $auth);
+
+            $this->subscribedTopics[$client][$userId] = $topic;
+            $this->logger->addDebug('User: ' . $userId . ' has subscribed to ' . $client);
+        } catch (\Exception $exception) {
+            $this->logger->addError($exception->getMessage());
+        }
+    }
+
+
+    /**
+     * @param \stdClass $client
+     * @param integer $userId
+     * @param string $authKey
+     * @return bool
+     */
+    protected function authorise($client, $userId, $authKey)
+    {
+        $this->logger->addDebug('Attempting to authorise userId ' . $userId . ' on ' . $client->server_url);
+        if (0 === $client->require_auth) {
+            $this->logger->addDebug('Authentication turned off, automatically authorised');
+            return true;
+        }
+        $authUrl = $client->server_url;
+
+        $client = new Client(['base_uri' => $authUrl]);
+        $response = $client->request('GET', '?userId=' . $userId . '&authKey=' . $authKey);
+        if (404 === $response->getStatusCode()) {
+            throw new CurlException('Url: ' . $authUrl . ' is not valid');
         }
 
-        $client = $subscriptionInfo[0];
-        $userId = $subscriptionInfo[1];
-        $auth = $subscriptionInfo[2];
+        if (403 === $response->getStatusCode()) {
+            throw new CurlException('Not authorised');
+        }
 
-        $this->subscribedTopics[$client][$userId] = $topic;
-        Helpers::writeLine('User: ' . $userId . ' has subscribed to ' . $client);
+
+        if (200 !== $response->getStatusCode()) {
+            throw new CurlException('Invalid status code: ' . $response->getStatusCode());
+        }
+
+        $this->logger->addDebug('Authorisation successful');
+
+        return true;
+
+
     }
 
     /**
@@ -45,33 +126,37 @@ class Chat implements WampServerInterface
      */
     public function onInstantMessage($entry)
     {
-        $entryData = json_decode($entry, true);
+        try {
+            $entryData = json_decode($entry, true);
 
-        if (!array_key_exists('client', $entryData)) {
-            Helpers::writeLine('Client is not set in entry data');
-        }
-
-        if (!array_key_exists('subscribedUsers', $entryData)) {
-            Helpers::writeLine('subscribedUsers is not set in entry data');
-        }
-
-        $client = $entryData['client'];
-        $subscribedUsers = $entryData['subscribedUsers'];
-
-        Helpers::writeLine('Message sent from ' . $client . ' to: ' . implode(', ', $subscribedUsers));
-
-        if (!array_key_exists($client, $this->subscribedTopics)) {
-            Helpers::writeLine('No one set up to view: ' . $client . ' message not sent');
-            return;
-        }
-
-        foreach ($subscribedUsers as $subscribedUser) {
-            if (!array_key_exists($subscribedUser, $this->subscribedTopics[$client])) {
-                continue;
+            if (!array_key_exists('client', $entryData)) {
+                throw new \RuntimeException('Client is not set in entry data');
             }
-            /** @var Topic $topic */
-            $topic = $this->subscribedTopics[$client][$subscribedUser];
-            $topic->broadcast($entryData);
+
+            if (!array_key_exists('subscribedUsers', $entryData)) {
+                throw new \RuntimeException('subscribedUsers is not set in entry data');
+            }
+
+            $client = $entryData['client'];
+            $subscribedUsers = $entryData['subscribedUsers'];
+
+            $this->logger->addDebug('Message sent from ' . $client . ' to: ' . implode(', ', $subscribedUsers));
+
+            if (!array_key_exists($client, $this->subscribedTopics)) {
+                $this->logger->addDebug('No one set up to view: ' . $client . ' message not sent');
+                return;
+            }
+
+            foreach ($subscribedUsers as $subscribedUser) {
+                if (!array_key_exists($subscribedUser, $this->subscribedTopics[$client])) {
+                    continue;
+                }
+                /** @var Topic $topic */
+                $topic = $this->subscribedTopics[$client][$subscribedUser];
+                $topic->broadcast($entryData);
+            }
+        } catch (\Exception $exception) {
+            $this->logger->addError($exception->getMessage());
         }
 
     }
@@ -85,8 +170,7 @@ class Chat implements WampServerInterface
     {
         $this->connections->attach($conn);
 
-        echo "Someone has opened a connection" . PHP_EOL;
-        // TODO: Implement onOpen() method.
+        $this->logger->addDebug('Someone has opened a connection');
     }
 
     /**
@@ -97,8 +181,7 @@ class Chat implements WampServerInterface
     function onClose(ConnectionInterface $conn)
     {
         $this->connections->detach($conn);
-        // TODO: Implement onClose() method.
-        echo "Someone has closed a connection" . PHP_EOL;
+        $this->logger->addDebug('Someone has closed a connection');
     }
 
     /**

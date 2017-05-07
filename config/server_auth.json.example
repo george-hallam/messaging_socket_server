@@ -1,0 +1,14 @@
+{
+  "client_dev": {
+    "require_auth": 0,
+    "server_url": "http://dev.client.com/user/authorise-chat"
+  },
+  "client_staging": {
+    "require_auth": 1,
+    "server_url": "http://staging.client.com/user/authorise-chat"
+  },
+  "client": {
+    "require_auth": 1,
+    "server_url": "https://client.com/user/authorise-chat"
+  }
+}
